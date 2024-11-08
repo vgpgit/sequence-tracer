@@ -3,6 +3,8 @@ package com.sequence.trace;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.io.InputStream;
+import java.io.FileInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -10,11 +12,13 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.stream.Collectors;
 
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
+import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
@@ -34,15 +38,24 @@ public class SequenceTracer {
 	public static void main(String[] args) {
 		
 		try {
-			Path startPath = Paths.get("/Users/vgp/Venu/CodeBase/GitHub_Repository/SpringBoot/SpringBatch/src/main/java");
-			String basePackage = "com.example.springbatch";
-			String sequenceStartPackage = "com.example.springbatch";
+			Properties properties = new Properties();
+			try (InputStream is = new FileInputStream("src/resources/tracer.properties")) {
+				properties.load(is);
+			} catch (Exception ex) {
+				System.out.println("Unable to find thee specified properties file");
+				ex.printStackTrace();
+				System.exit(1);
+			}
+			
+			Path sourceStartPath = Paths.get(properties.getProperty("source.start.path"));
+			String basePackage = properties.getProperty("base.package");
+			String sequenceStartPackage = properties.getProperty("sequence.start.package");
 			
 			fileContent = new StringBuilder();
 			classDataMap = new LinkedHashMap<>();
 			List<String> sequenceClassKeyList = new ArrayList<>();
 			
-			List<Path> pathList = Files.walk(startPath)
+			List<Path> pathList = Files.walk(sourceStartPath)
 										.filter(path -> path.toFile().isFile())
 										.filter(path -> path.toFile().getAbsolutePath().endsWith(".java"))
 										.collect(Collectors.toList());
@@ -116,9 +129,10 @@ public class SequenceTracer {
 					MethodData methodData = new MethodData();
 					Map<String, String> methodCallMap = new LinkedHashMap<>();
 					
-					//set apiContextURL if available
+					//set values if annotations available
 					if (!method.getAnnotations().isEmpty()) {
 						methodData.setApiContextURL(getApiContextURL(method));
+						methodData.setSqlQuery(getSQLQuery(method));
 					}
 					
 					method.accept(new VoidVisitorAdapter<Void>() {
@@ -198,12 +212,17 @@ public class SequenceTracer {
 	
 	private static void findMethodCallHierarchyRecursively(ClassData classData, String methodName, String tab, boolean isPrivate) {
 		
-		if (!isPrivate) {
-			log(tab + "->" + classData.getClassKey() + "." + methodName);
-		}
-		
 		MethodData methodData = classData.getMethodsMap().get(methodName); //this gets all called method details for current method
 		//System.out.println(methodData.getMethodCallMap().toString());
+		
+		if (!isPrivate) {
+			String sqlQuery = null;
+			if (methodData != null) {
+				sqlQuery = classData.getMethodsMap().get(methodName).getSqlQuery();
+			}
+			
+			log(tab + "->" + classData.getClassKey() + "." + methodName + (sqlQuery != null? "\t\t[" + sqlQuery + "]": ""));
+		}
 		
 		if (methodData == null) { //this happens when we call the method which is part of library like findById() or save() of crudrepository but not part of our codebase
 			return;
@@ -245,7 +264,7 @@ public class SequenceTracer {
 			else {
 				//this is for private methods or method call without reference like static methods
 				if (nextCalledMethod.startsWith("null.")) {
-					log (tab + "\t->" + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1));
+					log (tab + "\t->" + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1) + "\t\t[LIB]");
 					
 					//find sequence of private method
 					findMethodCallHierarchyRecursively(classData, 
@@ -312,6 +331,35 @@ public class SequenceTracer {
 		}
 		
 		return apiContextURL;
+	}
+	
+	private static String getSQLQuery(MethodDeclaration methodDeclaration) {
+		String sqlQuery = null;
+		
+		for (AnnotationExpr annotation: methodDeclaration.getAnnotations()) {
+			String annotationStr = annotation.getName().asString();
+			
+			if (annotationStr.equals("Query")
+					|| annotationStr.equals("GetMapping")
+					|| annotationStr.equals("PutMapping")
+					|| annotationStr.equals("DeleteMapping")) {
+				//get value of value attribute
+				for (Node node: annotation.getChildNodes()) {
+					if (node.toString().contains("value")) {
+						sqlQuery = node.toString().substring(node.toString().indexOf("=") + 2);
+						sqlQuery = sqlQuery.replace("\"", "")
+											.replace("+", "")
+											.replace("\\r\\n", "")
+											.replace(System.lineSeparator(), "");
+						break;
+					}
+				}
+				
+				break;
+			}
+		}
+		
+		return sqlQuery;
 	}
 
 	public static void writeFile(String absFilePath, String content) throws Exception {
