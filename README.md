@@ -2,11 +2,11 @@
 
 How to Run
 ----------
-1) Set values for below properties in tracer.properties
-	source.start.path=<absolute directory path>		[Mandatory]
-	base.package=<fully qualified package name>		[Mandatory]
-	sequence.start.package=<fully qualified start package name to trace> [Mandatory]
-	jpa.named.queries.path=<absolute file path> [Optional - set only if exists]
+1) Set values for below properties in tracer.properties <br>
+	source.start.path=&lt;absolute directory path&gt;		[Mandatory] <br>
+	base.package=&lt;fully qualified package name&gt;		[Mandatory] <br>
+	sequence.start.package=&lt;fully qualified start package name to trace&gt; [Mandatory] <br>
+	jpa.named.queries.path=&lt;absolute file path&gt; [Optional - set only if exists otherwise comment it] 
 	
 2) Run main class: SequenceTracer.java
 
