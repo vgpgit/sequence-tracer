@@ -1,5 +1,7 @@
 # sequence-tracer
 
+Cool tiny tool to trace the method sequence on java files
+
 How to Run
 ----------
 1) Set values for below properties in tracer.properties <br>
