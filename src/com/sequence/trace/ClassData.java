@@ -10,6 +10,7 @@ public class ClassData {
 	private String classKey;
 	private String packageName;
 	private List<String> importsList;
-	private Map<String, String> fieldsMap;
+	private Map<String, FieldData> fieldsMap;
 	private Map<String, MethodData> methodsMap;
+	private String associatedEntity;
 }

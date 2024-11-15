@@ -8,6 +8,6 @@ import lombok.Data;
 public class MethodData {
 	private String apiContextURL;
 	private String sqlQuery;
-	private Map<String, String> methodCallMap;
+	private Map<String, CalledMethodData> methodCallMap;
 
 }
