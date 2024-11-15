@@ -25,8 +25,10 @@ import com.github.javaparser.ast.body.FieldDeclaration;
 import com.github.javaparser.ast.body.MethodDeclaration;
 import com.github.javaparser.ast.body.VariableDeclarator;
 import com.github.javaparser.ast.expr.AnnotationExpr;
+import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MethodCallExpr;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.ast.type.Type;
 import com.github.javaparser.ast.visitor.VoidVisitorAdapter;
 
 public class SequenceTracer {
@@ -34,6 +36,7 @@ public class SequenceTracer {
 	private static Map<String, ClassData> classDataMap;
 	private static Map<String, String> interfaceClassMap;
 	private static StringBuilder fileContent;
+	private static Map<String, String> jpaNamedQueryMap;
 	
 	public static void main(String[] args) {
 		
@@ -48,8 +51,23 @@ public class SequenceTracer {
 			}
 			
 			Path sourceStartPath = Paths.get(properties.getProperty("source.start.path"));
+			String jpaNamedQueryPath = properties.getProperty("jpa.named.queries.path");
 			String basePackage = properties.getProperty("base.package");
 			String sequenceStartPackage = properties.getProperty("sequence.start.package");
+			
+			//load jpa-named-query file if exists
+			jpaNamedQueryMap = new LinkedHashMap<>();
+			if (jpaNamedQueryPath != null) {
+				try (InputStream is = new FileInputStream(jpaNamedQueryPath)) {
+					properties.load(is);
+					jpaNamedQueryMap = properties.entrySet().stream()
+											.collect(Collectors.toMap(e -> (String) e.getKey(), e -> (String) e.getValue()));
+				} catch (Exception ex) {
+					System.out.println("Unable to find thee specified properties file");
+					ex.printStackTrace();
+					System.exit(1);
+				}
+			}
 			
 			fileContent = new StringBuilder();
 			classDataMap = new LinkedHashMap<>();
@@ -90,6 +108,26 @@ public class SequenceTracer {
 					interfaceClassMap.put(classOrInterfaceType.getNameAsString(), classOrInterfaceDeclaration.getFullyQualifiedName().get());
 				}
 				
+				//assign associated entity name if its repository interface
+				if (!classOrInterfaceDeclaration.getExtendedTypes().isEmpty()) {
+					for (ClassOrInterfaceType classOrInterfaceType: classOrInterfaceDeclaration.getExtendedTypes()) {
+						if (classOrInterfaceType.getTypeArguments().isPresent()) {
+							for (Type type: classOrInterfaceType.getTypeArguments().get()) {
+								if (type.asString().toUpperCase().contains("ENTITY")) {
+									classData.setAssociatedEntity(type.asString());
+									break;
+								}
+							}
+							
+							if (classData.getAssociatedEntity() == null) { //if entity class name not endswith Entity
+								classData.setAssociatedEntity(classOrInterfaceType.getTypeArguments().get().get(0).asString());
+							}
+							
+							break;
+						}
+					}
+				}
+				
 				NodeList<ImportDeclaration> importDeclarationList = compilationUnit.getImports();
 				List<FieldDeclaration> fieldDeclaration = classOrInterfaceDeclaration.getFields();
 				List<MethodDeclaration> methodDeclaration = classOrInterfaceDeclaration.getMethods();
@@ -113,10 +151,20 @@ public class SequenceTracer {
 				classData.setImportsList(importsList);
 				
 				//set fields (member variables ) map
-				Map<String, String> fieldsMap = new LinkedHashMap<>();
+				Map<String, FieldData> fieldsMap = new LinkedHashMap<>();
 				for (FieldDeclaration field: fieldDeclaration) {
 					for (VariableDeclarator variable: field.getVariables()) {
-						fieldsMap.put(variable.getNameAsString(), variable.getTypeAsString());
+						FieldData fieldData = new FieldData();
+						fieldData.setFieldName(variable.getNameAsString());
+						fieldData.setFieldType(variable.getTypeAsString());
+						
+						if (variable.getInitializer().isPresent()) {
+							String value = variable.getInitializer().get().toString();
+							value = value.replace("\"", "").replace("\\r\\n", "").replace(System.lineSeparator(), "");
+							fieldData.setFieldValue(value);
+						}
+						
+						fieldsMap.put(variable.getNameAsString(), fieldData); //reference variable -> fieldData map
 					}
 				}
 				classData.setFieldsMap(fieldsMap);
@@ -127,28 +175,42 @@ public class SequenceTracer {
 					System.out.println(method.getNameAsString() + "--" + method.getParameters().size());
 					
 					MethodData methodData = new MethodData();
-					Map<String, String> methodCallMap = new LinkedHashMap<>();
+					Map<String, CalledMethodData> methodCallMap = new LinkedHashMap<>();
 					
 					//set values if annotations available
 					if (!method.getAnnotations().isEmpty()) {
 						methodData.setApiContextURL(getApiContextURL(method));
-						methodData.setSqlQuery(getSQLQuery(method));
+						methodData.setSqlQuery(getSQLQuery(classData, method));
 					}
 					
 					method.accept(new VoidVisitorAdapter<Void>() {
 						@Override
 						public void visit(MethodCallExpr n, Void arg) {
 							//found the method call
+							CalledMethodData calledMethodData = new CalledMethodData();
+							
 							//System.out.println(n.getName().toString() + "----" + n.getArguments().size());
 							String methodName = n.getName().toString() + "(" + n.getArguments().size() + ")";
-							String refType = n.getScope().isPresent()? n.getScope().get().toString(): null;
-							//System.out.println(refType + methodName);
+							String refVariable = n.getScope().isPresent()? n.getScope().get().toString(): null;
+							//System.out.println(refVariable + methodName);
 							
-							if (refType == null && n.getName().toString().equals(method.getNameAsString())) { //recursion case
-								methodCallMap.put(refType + "." + methodName + "_recursion", refType);
+							calledMethodData.setCalledMethodName(n.getName().toString());
+							calledMethodData.setRefVariable(refVariable);
+							
+							//set arguments list if exists
+							if (!n.getArguments().isEmpty()) {
+								List<String> argumentsList = new ArrayList<>();
+								for (Expression expression: n.getArguments()) {
+									argumentsList.add(expression.toString());
+								}
+								calledMethodData.setArgumentsList(argumentsList);
+							}
+							
+							if (refVariable == null && n.getName().toString().equals(method.getNameAsString())) { //recursion case
+								methodCallMap.put(refVariable + "." + methodName + "_recursion", calledMethodData);
 							}
 							else {
-								methodCallMap.put(refType + "." + methodName, refType);
+								methodCallMap.put(refVariable + "." + methodName, calledMethodData);
 							}
 							
 							super.visit(n, arg);
@@ -230,10 +292,10 @@ public class SequenceTracer {
 		
 		for (String nextCalledMethod: methodData.getMethodCallMap().keySet()) { //iterate all called methods
 			//System.out.println("nextCallMethod: " + nextCallMethod);
-			String callReference = methodData.getMethodCallMap().get(nextCalledMethod); //get reference of called method
+			String callReference = methodData.getMethodCallMap().get(nextCalledMethod).getRefVariable(); //get reference of called method
 			
 			if (callReference != null && classData.getFieldsMap().containsKey(callReference)) { // check if that reference is a class field (member variable)
-				String refType = classData.getFieldsMap().get(callReference); //get the interface/class type of that field reference
+				String refType = classData.getFieldsMap().get(callReference).getFieldType(); //get the interface/class type of that field reference
 				//System.out.println("refType: " + refType);
 				
 				ClassData nextClassInSequence = null;
@@ -258,13 +320,17 @@ public class SequenceTracer {
 				}
 				else {
 					//has reference field but type is part of library and not from codebase
-					log(tab + "\t->" + nextClassKey + "." + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1));
+					if (nextCalledMethod.toUpperCase().contains("JDBCTEMPLATE")) {//this block is to trace sql queries in all the ways
+						extractSQLFromField(classData, methodData, nextCalledMethod, tab);
+					}
+					else {
+						log(tab + "\t->" + nextClassKey + "." + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1) + "\t\t[LIB]");
+					}
 				}
 			}
 			else {
-				//this is for private methods or method call without reference like static methods
-				if (nextCalledMethod.startsWith("null.")) {
-					log (tab + "\t->" + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1) + "\t\t[LIB]");
+				if (nextCalledMethod.startsWith("null.")) { //this is for private methods or method call without reference like static methods
+					log (tab + "\t->" + nextCalledMethod.substring(nextCalledMethod.indexOf(".") + 1));
 					
 					//find sequence of private method
 					findMethodCallHierarchyRecursively(classData, 
@@ -272,8 +338,45 @@ public class SequenceTracer {
 							tab + "\t",
 							true);
 				}
+				else if (nextCalledMethod.toUpperCase().contains("JDBCTEMPLATE")) {//this block is to trace sql queries in all the ways
+					extractSQLFromField(classData, methodData, nextCalledMethod, tab);
+				}
+				else {
+					//do nothing for all other local methods
+				}
 			}
 		}//end of for loop
+	}
+	
+	private static void extractSQLFromField(ClassData classData, MethodData methodData, String nextCalledMethod, String tab) {
+		String firstArgument = "";
+		if (methodData.getMethodCallMap().get(nextCalledMethod).getArgumentsList() != null) {
+			firstArgument = methodData.getMethodCallMap().get(nextCalledMethod).getArgumentsList().get(0);
+		}
+		
+		FieldData fieldData = classData.getFieldsMap().get(firstArgument);
+		
+		if (fieldData != null) { //if field match found on current class
+			log(tab + "\t-> " + nextCalledMethod + " [" + firstArgument + " - " + fieldData.getFieldValue() + "]");
+		}
+		else if (firstArgument.contains(".")) {//look for field match on other class like constants class
+			String refType = firstArgument.substring(0, firstArgument.indexOf("."));
+			String field = firstArgument.substring(firstArgument.indexOf(".") + 1);
+			String tempClassKey = getFullyQualifiedType(classData.getPackageName(), classData.getImportsList(), refType);
+			ClassData tempClassData = classDataMap.get(tempClassKey);
+			
+			if (tempClassData != null) {
+				log(tab + "\t-> " + nextCalledMethod + " [" + firstArgument + " - " + tempClassData.getFieldsMap().get(field).getFieldValue() + "]");
+			} else {
+				log(tab + "\t-> " + nextCalledMethod + " [" + firstArgument + "]");
+			}
+		}
+		else {
+			//TODO: Handle if query variable is statically imported as import statement
+			
+			//either query is hardcoded inline or from local variable
+			log(tab + "\t-> " + nextCalledMethod + " [" + firstArgument + "]");
+		}
 	}
 	
 	private static String getFullyQualifiedType(String packageName, List<String> importsList, String typeName) {
@@ -333,7 +436,7 @@ public class SequenceTracer {
 		return apiContextURL;
 	}
 	
-	private static String getSQLQuery(MethodDeclaration methodDeclaration) {
+	private static String getSQLQuery(ClassData classData, MethodDeclaration methodDeclaration) {
 		String sqlQuery = null;
 		
 		for (AnnotationExpr annotation: methodDeclaration.getAnnotations()) {
@@ -353,6 +456,10 @@ public class SequenceTracer {
 											.replace(System.lineSeparator(), "");
 						break;
 					}
+				}
+				
+				if (sqlQuery == null) {//if no sql present in Query annotation then look at jpaNamedQueryMap
+					sqlQuery = jpaNamedQueryMap.get(classData.getAssociatedEntity() + "." + methodDeclaration.getNameAsString());
 				}
 				
 				break;
