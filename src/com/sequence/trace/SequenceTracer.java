@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.stream.Collectors;
 
+import com.github.javaparser.JavaParser;
+import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.ImportDeclaration;
@@ -89,8 +91,11 @@ public class SequenceTracer {
 				System.out.println(path.toAbsolutePath());
 				
 				ClassData classData = new ClassData();
-				CompilationUnit compilationUnit = StaticJavaParser.parse(path.toFile());
-				ClassOrInterfaceDeclaration classOrInterfaceDeclaration = null;
+				final ParserConfiguration parserConfiguration = new ParserConfiguration();
+				parserConfiguration.setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_17);
+				JavaParser javaParser = new JavaParser(parserConfiguration);
+				CompilationUnit compilationUnit = javaParser.parse(path.toFile()).getResult().get();
+				ClassOrInterfaceDeclaration classOrInterfaceDeclaration;
 				
 				try {
 					classOrInterfaceDeclaration = compilationUnit.findAll(ClassOrInterfaceDeclaration.class).get(0);
